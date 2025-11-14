@@ -1,0 +1,5 @@
+{
+  "holdout_accuracy": 0.7301927194860813,
+  "holdout_f1_macro": 0.5797098314506545,
+  "model": "rf_baseline_v1.pkl"
+}
