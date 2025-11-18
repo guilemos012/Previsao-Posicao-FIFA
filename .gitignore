@@ -1,4 +1,5 @@
 *.ipynb_checkpoints
 .venv
 Treino/models
+*.json
 *.pkl
