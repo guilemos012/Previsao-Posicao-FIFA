@@ -1,5 +1,11 @@
 *.ipynb_checkpoints
 .venv
 Treino/models
+Treino/models_hierarquico
+Treino/models_comprimido
 *.json
+*.csv
 *.pkl
+*.h5
+__pycache__/
+.env
