@@ -251,8 +251,11 @@ if run_button:
         fig = plot_pizza_plotly(values, title=f"Atributos")
         st.plotly_chart(fig, use_container_width=True)
 
+        # formatação com 2 casas decimais   
+        X_fmt = X_player.T.copy()
+        X_fmt = X_fmt.applymap(lambda x: f"{x:.2f}" if isinstance(x, (int, float, np.number)) else x)
         st.subheader("Features usadas (input para o modelo)")
-        st.table(X_player.T)
+        st.table(X_fmt)
 
         # -------- RF Básico --------
         if model_choice == "Random Forest Direto":
@@ -270,7 +273,7 @@ if run_button:
             idx = np.argsort(proba)[::-1][:topk]
             df_top = pd.DataFrame({
                 "position": [classes_names[i] for i in idx],
-                "probability": [float(proba[i]) for i in idx]
+                "probability": [f"{proba[i]*100:.2f}%" for i in idx]
             })
             st.table(df_top)
 
@@ -286,8 +289,8 @@ if run_button:
             macro_names = [macro_name_map.get(int(e), str(int(e))) for e in macro_classes]
             df_macro_probs = pd.DataFrame({
                 "macro": macro_names,
-                "prob": [float(x) for x in macro_proba]
-            }).sort_values("prob", ascending=False).reset_index(drop=True)
+                "probability": [f"{x*100:.2f}%" for x in macro_proba]
+            }).sort_values("probability", ascending=False).reset_index(drop=True)
             st.table(df_macro_probs)
 
             # main: escolher model de acordo com o macro_position
@@ -307,7 +310,7 @@ if run_button:
                 idx = np.argsort(main_proba)[::-1][:topk]
                 df_top_main = pd.DataFrame({
                     "position": [classes_names_main[i] for i in idx],
-                    "probability": [float(main_proba[i]) for i in idx]
+                    "probability": [f"{main_proba[i]*100:.2f}%" for i in idx]
                 })
                 st.table(df_top_main)
             else:
