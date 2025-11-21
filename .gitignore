@@ -9,3 +9,4 @@ Treino/models_comprimido
 *.h5
 __pycache__/
 .env
+.streamlit/

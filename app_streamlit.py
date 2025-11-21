@@ -6,8 +6,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from huggingface_hub import hf_hub_download
-import matplotlib.pyplot as plt
-import seaborn as sns
+import plotly.graph_objects as go
+import requests
+from io import BytesIO
+from PIL import Image, UnidentifiedImageError
+import tempfile
 
 st.set_page_config(layout="wide", page_title="Previsão de Posição - EA FC26")
 
@@ -58,7 +61,7 @@ st.sidebar.title("Configurações")
 
 # carregar CSVs
 df_prepared = load_prepared(PREPARED_CSV)
-df_orig = load_original(ORIG_CSV, usecols=['player_id','short_name','player_face_url','club_name','player_positions']) \
+df_orig = load_original(ORIG_CSV, usecols=['player_id','short_name','player_face_url','club_name','player_positions', 'nationality_name']) \
           if Path(ORIG_CSV).exists() else pd.DataFrame()
 
 # procura por player_id
@@ -95,16 +98,122 @@ else:
 st.sidebar.markdown("### Escolha jogador e modelo")
 if not df_orig.empty:
     choices = df_orig[['player_id','short_name','club_name']].drop_duplicates().sort_values('short_name')
-    display_names = choices.apply(lambda r: f"{r.short_name} — {r.club_name} ({int(r.player_id)})", axis=1)
+    display_names = choices.apply(lambda r: f"{r.short_name} — {r.club_name}", axis=1)
     player_select = st.sidebar.selectbox("Jogador", options=choices['player_id'].tolist(), format_func=lambda pid: display_names[choices['player_id']==pid].values[0])
 else:
     choices = df_prepared[['player_id','short_name']].drop_duplicates().sort_values('short_name')
     display_names = choices['short_name'].tolist()
     player_select = st.sidebar.selectbox("Jogador", options=choices['player_id'].tolist(), format_func=lambda pid: choices[choices['player_id']==pid]['short_name'].values[0])
 
-model_choice = st.sidebar.selectbox("Modelo", ["RF_Basico", "RF_Hierarquico"])
+model_choice = st.sidebar.selectbox("Modelo", ["Random Forest Direto", "Random Forest Hierárquico"])
 
 run_button = st.sidebar.button("Rodar predição")
+
+
+# Funções pra gerar gráfico com base nos atributos principais
+def get_macro_values(row):
+    """
+    row: pandas Series com colunas:
+     'pace','shooting','passing','dribbling','defending','physic'
+    retorna lista na ordem [pace, shooting, passing, dribbling, defending, physic]
+    Garantindo valores 0..100
+    """
+    keys = ['pace','shooting','passing','dribbling','defending','physic']
+    vals = []
+    for k in keys:
+        v = row.get(k, None)
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            vals.append(0.0)
+        else:
+            try:
+                vals.append(float(v))
+            except:
+                vals.append(0.0)
+    # clip 0..100
+    vals = [max(0.0, min(100.0, x)) for x in vals]
+    return vals
+
+def plot_pizza_plotly(values, title="Atributos: (0-100)"):
+    """
+    values: array com 6 valores (0..100)
+    retorna figure plotly
+    """
+    labels = ["Pace","Shooting","Passing","Dribbling","Defending","Physic"]
+    thetas = [0, 60, 120, 180, 240, 300]
+    fig = go.Figure()
+
+    fig.add_trace(go.Barpolar(
+        r = values,
+        theta = thetas,
+        width = [60]*6,
+        name = "Stats",
+        marker_line_color="black",
+        marker_line_width=1,
+        opacity=0.9,
+        hovertemplate = "%{theta}°<br>%{r:.0f}"
+    ))
+
+    fig.update_layout(
+        template=None,
+        polar = dict(
+            radialaxis = dict(range=[0,100], showticklabels=False, ticks="", showline=False, gridcolor='lightgray'),
+            angularaxis = dict(tickmode='array', tickvals=thetas, ticktext=labels, rotation=90, direction="clockwise")
+        ),
+        showlegend=False,
+        title = dict(text=title, x=0.5)
+    )
+
+    return fig
+
+# Função pra exibir a foto do jogador (pela url estava dando problema)
+@st.cache_data(show_spinner=False)
+def fetch_image_bytes(url, timeout=8):
+    """
+    Tenta baixar a imagem e retorna bytes.
+    Usa um user-agent para aumentar chance de sucesso.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/120.0.0.0 Safari/537.36"
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        # checar content-type simples
+        ctype = resp.headers.get("Content-Type", "")
+        if not ctype.startswith("image"):
+            return None
+        return resp.content
+    except Exception as e:
+        return None
+
+def display_player_image(row_orig, width=180):
+    """
+    row_orig: Series com chave 'player_face_url' (string)
+    tenta st.image(url) primeiro; se não renderizar, baixa e mostra via bytes.
+    """
+    if row_orig is None:
+        st.write("Foto não disponível")
+        return
+
+    url = row_orig.get("player_face_url", None)
+    if not url or not isinstance(url, str):
+        st.write("Foto não disponível")
+        return
+
+    img_bytes = fetch_image_bytes(url)
+    if img_bytes:
+        try:
+            img = Image.open(BytesIO(img_bytes))
+            st.image(img, width=width)
+            return
+        except Exception:
+            st.write("Não foi possível renderizar a imagem a partir dos bytes.")
+            return
+
+    # falha geral
+    st.write("Foto não disponível (falha ao baixar).")
 
 # Quando clicar: rodar inferência e exibir info
 def get_player_rows(pid):
@@ -120,42 +229,43 @@ if run_button:
     if row_prep.shape[0] == 0:
         st.error("Jogador não encontrado em players_prepared.csv.")
     else:
-        # build feature vector for the player
         X_player = row_prep.iloc[0:1][features_used]
 
-        # display header / photo / basic info
-        st.title(f"{row_prep.iloc[0]['short_name']} — Previsão de posição")
+        # informações básicas
+        st.title(f"{row_prep.iloc[0]['short_name']} — Previsão de Posição")
         col1, col2 = st.columns([1,2])
         with col1:
-            if row_orig is not None and pd.notna(row_orig.get('player_face_url', None)):
-                st.image(row_orig['player_face_url'], width=180)
-            else:
-                st.write("Foto não disponível")
-        with col2:
-            st.markdown(f"**Club:** {row_prep.iloc[0].get('club_name','-')}")
-            st.markdown(f"**Posições originais (dataset):** {row_prep.iloc[0].get('player_positions','-')}")
-            st.markdown(f"**Overall / País:** {row_prep.iloc[0].get('overall','-')} / {row_prep.iloc[0].get('nationality_name','-')}")
-            st.markdown(f"**Idade / Altura:** {row_prep.iloc[0].get('age','-')} / {row_prep.iloc[0].get('height_cm','-')}cm")
+            display_player_image(row_orig, width=180)
 
-        # show feature table (top relevant features)
+        with col2:
+            prep = row_prep.iloc[0]
+
+            st.markdown(f"**Clube:** {row_orig.get('club_name', '-') if row_orig is not None else '-'}")
+            st.markdown(f"**Posições Originais (dataset):** {row_orig.get('player_positions','-') if row_orig is not None else '-'}")
+            st.markdown(f"**Overall:** {prep.get('overall','-')}")
+            st.markdown(f"**País:** {row_orig.get('nationality_name', '-') if row_orig is not None else '-'}")
+            st.markdown(f"**Idade:** {prep.get('age','-')}")
+
+        # printar gráfico com atributos
+        values = get_macro_values(row_prep)
+        fig = plot_pizza_plotly(values, title=f"Atributos")
+        st.plotly_chart(fig, use_container_width=True)
+
         st.subheader("Features usadas (input para o modelo)")
         st.table(X_player.T)
 
         # -------- RF Básico --------
-        if model_choice == "RF_Basico":
-            st.subheader("RF Básico — predição")
+        if model_choice == "Random Forest Direto":
+            st.subheader("Random Forest Direto — predição")
             pred_enc = rf_baseline.predict(X_player)[0]
             proba = rf_baseline.predict_proba(X_player)[0]
 
-            # map classes to names using mapping from df_prepared (label_map_enc2name)
             classes_enc = list(rf_baseline.classes_)
             classes_names = [label_map_enc2name.get(int(e), str(int(e))) for e in classes_enc]
 
-            # present prediction
             pred_name = label_map_enc2name.get(int(pred_enc), str(int(pred_enc)))
             st.markdown(f"**Predição (principal):** {pred_name}")
 
-            # top-3 probabilities
             topk = 5 if len(proba) >= 5 else len(proba)
             idx = np.argsort(proba)[::-1][:topk]
             df_top = pd.DataFrame({
@@ -164,23 +274,14 @@ if run_button:
             })
             st.table(df_top)
 
-            # feature importances (top 20)
-            fi = rf_baseline.feature_importances_
-            fi_series = pd.Series(fi, index=features_used).sort_values(ascending=False).head(20)
-            st.subheader("Feature importances (top 20)")
-            fig, ax = plt.subplots(figsize=(8,4))
-            sns.barplot(x=fi_series.values, y=fi_series.index, ax=ax)
-            ax.set_xlabel("Importance")
-            st.pyplot(fig)
-
         # -------- RF Hierárquico --------
         else:
-            st.subheader("RF Hierárquico — predição (macro → main)")
+            st.subheader("Random Forest Hierárquico — predição (macro → main)")
             # macro
             macro_pred = rf_macro.predict(X_player)[0]
             macro_proba = rf_macro.predict_proba(X_player)[0]
             st.markdown(f"**Macro predito:** {macro_name_map.get(int(macro_pred), str(int(macro_pred)))}")
-            # show macro probs
+
             macro_classes = list(rf_macro.classes_)
             macro_names = [macro_name_map.get(int(e), str(int(e))) for e in macro_classes]
             df_macro_probs = pd.DataFrame({
@@ -189,13 +290,12 @@ if run_button:
             }).sort_values("prob", ascending=False).reset_index(drop=True)
             st.table(df_macro_probs)
 
-            # main: pick model according to macro_pred
+            # main: escolher model de acordo com o macro_position
             if int(macro_pred) in rf_main_models:
                 rf_main = rf_main_models[int(macro_pred)]
                 main_pred = rf_main.predict(X_player)[0]
                 main_proba = rf_main.predict_proba(X_player)[0]
 
-                # map classes via label_map_enc2name
                 classes_enc_main = list(rf_main.classes_)
                 classes_names_main = [label_map_enc2name.get(int(e), str(int(e))) for e in classes_enc_main]
 

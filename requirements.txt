@@ -7,3 +7,6 @@ matplotlib
 seaborn
 huggingface_hub
 python-dotenv
+plotly
+requests
+pillow
